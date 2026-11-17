@@ -1,0 +1,8 @@
+# Local Kubernetes cluster (kind). Port 30080 on your computer reaches the app's NodePort.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 30080

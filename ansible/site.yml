@@ -1,0 +1,84 @@
+# Configuration management and checks for the FinOps monitor.
+#   config : render Terraform variables from the environment settings below
+#   preflight : check the tools needed for a deployment are installed
+#   smoke  : test the deployed service (health, summary, Prometheus metrics)
+# Run:  ansible-playbook ansible/site.yml --tags config,smoke -e target_env=dev
+- name: FinOps monitor configuration and smoke tests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    target_env: dev
+    app_url: "http://localhost:30080"
+    environments:
+      dev:  {replicas: 1, monthly_budget_usd: 25000, image: "finops-monitor:local"}
+      test: {replicas: 2, monthly_budget_usd: 25000, image: "finops-monitor:local"}
+      prod: {replicas: 3, monthly_budget_usd: 30000, image: "finops-monitor:local"}
+    settings: "{{ environments[target_env] }}"
+
+  tasks:
+    - name: Check the requested environment exists
+      ansible.builtin.assert:
+        that: target_env in environments
+        fail_msg: "Unknown environment {{ target_env }}; use one of {{ environments.keys() | list }}"
+      tags: [config, preflight, smoke]
+
+    - name: Render Terraform variables for {{ target_env }}
+      ansible.builtin.template:
+        src: templates/terraform.tfvars.j2
+        dest: "{{ playbook_dir }}/../terraform/{{ target_env }}.auto.tfvars"
+        mode: "0644"
+      tags: [config]
+
+    - name: Check deployment tools are installed
+      ansible.builtin.command: "{{ item }} version"
+      loop: [docker, kubectl, terraform]
+      register: tool_check
+      changed_when: false
+      failed_when: false
+      tags: [preflight]
+
+    - name: Report missing tools
+      ansible.builtin.assert:
+        that: item.rc == 0
+        fail_msg: "{{ item.item }} is not installed or not on PATH"
+        quiet: true
+      loop: "{{ tool_check.results }}"
+      loop_control: {label: "{{ item.item }}"}
+      tags: [preflight]
+
+    - name: Wait until the service is healthy
+      ansible.builtin.uri:
+        url: "{{ app_url }}/health"
+        return_content: true
+      register: health
+      until: health.status == 200
+      retries: 30
+      delay: 2
+      tags: [smoke]
+
+    - name: Read the cost summary
+      ansible.builtin.uri:
+        url: "{{ app_url }}/api/summary"
+        return_content: true
+      register: summary
+      tags: [smoke]
+
+    - name: Read Prometheus metrics
+      ansible.builtin.uri:
+        url: "{{ app_url }}/metrics"
+        return_content: true
+      register: metrics
+      tags: [smoke]
+
+    - name: Check the service returns sensible results
+      ansible.builtin.assert:
+        that:
+          - summary.json.total_cost > 0
+          - summary.json.budget_status in ['ok', 'warning', 'over']
+          - "'finops_month_forecast_usd' in metrics.content"
+        success_msg: >-
+          Smoke test passed: forecast ${{ summary.json.forecast.forecast }} vs budget
+          ${{ summary.json.budget }} ({{ summary.json.budget_status }}),
+          {{ summary.json.rightsizing | length }} rightsizing recommendations
+      tags: [smoke]
