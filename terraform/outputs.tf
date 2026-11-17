@@ -10,3 +10,7 @@ output "app_url" {
 output "replicas" {
   value = var.replicas
 }
+
+output "service_account" {
+  value = kubernetes_service_account_v1.app.metadata[0].name
+}

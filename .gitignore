@@ -7,3 +7,6 @@ terraform/.terraform/
 terraform/*.tfstate*
 terraform/.terraform.lock.hcl
 terraform/*.auto.tfvars
+terraform-aws/.terraform/
+terraform-aws/*.tfstate*
+terraform-aws/.terraform.lock.hcl

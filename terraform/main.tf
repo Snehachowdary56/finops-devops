@@ -43,6 +43,9 @@ resource "kubernetes_deployment_v1" "app" {
       }
 
       spec {
+        service_account_name            = kubernetes_service_account_v1.app.metadata[0].name
+        automount_service_account_token = false
+
         security_context {
           run_as_non_root = true
           run_as_user     = 10001

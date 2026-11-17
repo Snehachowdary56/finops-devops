@@ -20,6 +20,14 @@ jobs:
           terraform fmt -recursive -diff
           terraform init -backend=false -input=false
           terraform validate
+      - name: Terraform (AWS) format and validate
+        working-directory: terraform-aws
+        run: |
+          terraform fmt -recursive -diff -check
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Shell script check
+        run: bash -n scripts/publish_costs.sh && shellcheck scripts/publish_costs.sh
       - name: Build Docker image
         run: docker build -t finops-monitor:ci .
 
@@ -54,6 +62,18 @@ jobs:
         run: |
           kubectl -n finops rollout status deployment/finops-monitor --timeout=120s
           kubectl -n finops get pods,svc -o wide
+      - name: Check RBAC (least privilege) with kubectl auth can-i
+        run: |
+          SA=system:serviceaccount:finops:finops-monitor
+          kubectl -n finops get deploy finops-monitor -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
+          [ "$(kubectl auth can-i get configmap/finops-monitor-config -n finops --as=$SA)" = "yes" ]
+          for denied in "list secrets" "get secret/anything" "delete pods" "patch deployment/finops-monitor" "create configmaps"; do
+            out=$(kubectl auth can-i $denied -n finops --as=$SA || true)
+            echo "can-i $denied -> $out"; [ "$out" = "no" ]
+          done
+          out=$(kubectl auth can-i get configmaps -n kube-system --as=$SA || true)
+          echo "can-i get configmaps in kube-system -> $out"; [ "$out" = "no" ]
+          echo "RBAC check passed: read own config only"
       - name: Smoke test with Ansible
         run: ansible-playbook ansible/site.yml --tags smoke
       - name: Validate plain manifests against the cluster
@@ -81,3 +101,57 @@ jobs:
           curl -sf -u admin:admin http://localhost:3000/api/dashboards/uid/finops | python3 -c 'import sys,json; print("Dashboard:", json.load(sys.stdin)["dashboard"]["title"])'
       - if: always()
         run: docker compose logs --tail=50
+
+  aws-localstack:
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:3.8
+        ports: ["4566:4566"]
+        env:
+          SERVICES: s3,iam,sts,cloudwatch
+    env:
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: ca-central-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - name: Wait for LocalStack
+        run: |
+          for i in $(seq 1 30); do curl -sf http://localhost:4566/_localstack/health && break; sleep 2; done
+          aws --version
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_wrapper: false}
+      - name: Create AWS resources with Terraform (S3, IAM, CloudWatch alarm)
+        working-directory: terraform-aws
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve
+          terraform output
+      - name: Check resources with the AWS CLI
+        run: |
+          aws s3api get-bucket-versioning --bucket finops-cost-reports
+          aws s3api get-bucket-encryption --bucket finops-cost-reports --query 'ServerSideEncryptionConfiguration.Rules[0]'
+          aws s3api get-public-access-block --bucket finops-cost-reports
+          aws iam list-attached-user-policies --user-name finops-powerbi-reader
+          ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='finops-read-cost-reports'].Arn" --output text)
+          V=$(aws iam get-policy --policy-arn "$ARN" --query Policy.DefaultVersionId --output text)
+          aws iam get-policy-version --policy-arn "$ARN" --version-id "$V" --query PolicyVersion.Document
+      - name: Publish costs with the AWS CLI script
+        run: ./scripts/publish_costs.sh
+      - name: Wait for the CloudWatch budget alarm
+        run: |
+          for i in $(seq 1 20); do
+            aws cloudwatch put-metric-data --namespace FinOps --metric-name MonthForecastUSD --unit None --value 27847.88
+            state=$(aws cloudwatch describe-alarms --alarm-names finops-forecast-over-budget --query 'MetricAlarms[0].StateValue' --output text)
+            echo "alarm state: $state"; [ "$state" = "ALARM" ] && break
+            sleep 15
+          done
+          [ "$state" = "ALARM" ]
+          aws cloudwatch describe-alarms --alarm-names finops-forecast-over-budget --query 'MetricAlarms[0].[AlarmName,StateValue,StateReason]' --output text
+          echo "CloudWatch alarm fired: forecast above budget"

@@ -27,6 +27,10 @@ Endpoints: `/health`, `/api/summary` (JSON), `/metrics` (Prometheus).
 | `Dockerfile` | Docker | Small non-root image with a health check |
 | `kind-config.yaml` | Kubernetes (kind) | Local cluster; port 30080 reaches the service |
 | `terraform/` | Terraform | Infrastructure as code: namespace, ConfigMap, Deployment (2 replicas, probes, resource limits, read-only filesystem), NodePort Service |
+| `terraform/rbac.tf` | Kubernetes RBAC | Least privilege: the app's ServiceAccount + Role + RoleBinding can only `get` its own ConfigMap (checked with `kubectl auth can-i`) |
+| `terraform-aws/` | Terraform + AWS | S3 bucket for cost reports (private, encrypted, versioned), least-privilege IAM read policy + user for Power BI, CloudWatch alarm when the forecast is over budget. Runs on **LocalStack** (AWS emulator) by default, so no AWS bill |
+| `scripts/publish_costs.sh` / `.ps1` | AWS CLI (Bash / PowerShell) | Uploads the Power BI files to S3 and sends the month forecast to CloudWatch as a custom metric |
+| `docs/powerbi.md` | Power BI | Step-by-step dashboard build with DAX measures |
 | `k8s/finops-monitor.yaml` | Kubernetes | The same resources as plain manifests |
 | `ansible/site.yml` | Ansible | Renders per-environment Terraform settings (dev / test / prod), checks tools are installed, smoke-tests the live service |
 | `monitoring/` + `docker-compose.yml` | Prometheus, Grafana | Scrapes the metrics; Grafana dashboard with forecast, budget, untagged share, savings, cost by service and team |
@@ -36,11 +40,13 @@ Endpoints: `/health`, `/api/summary` (JSON), `/metrics` (Prometheus).
 
 ## Proof it works: GitHub Actions
 
-Every push runs three jobs on GitHub's machines:
+Every push runs four jobs on GitHub's machines:
 
-1. **test**: 19 pytest tests, Ansible syntax check, Terraform validate, Docker build
-2. **deploy-kubernetes**: creates a real Kubernetes cluster (kind), loads the image, runs Ansible, deploys with Terraform, waits for the rollout, then Ansible smoke-tests the live service
+1. **test**: 19 pytest tests, Ansible syntax check, Terraform validate (Kubernetes and AWS), ShellCheck, Docker build
+2. **deploy-kubernetes**: creates a real Kubernetes cluster (kind), loads the image, runs Ansible, deploys with Terraform, waits for the rollout, checks RBAC with `kubectl auth can-i` (allowed: read own config; denied: secrets, pods, deployments, other namespaces), then Ansible smoke-tests the live service
 3. **monitoring**: starts the app, Prometheus and Grafana, and checks Prometheus is scraping the app and Grafana loaded the dashboard
+
+4. **aws-localstack**: starts LocalStack, creates the S3 bucket, IAM policy/user and CloudWatch alarm with Terraform, checks them with the AWS CLI, runs `publish_costs.sh`, and waits until the CloudWatch alarm goes to **ALARM** (forecast $27,848 > budget $25,000)
 
 A green ✓ in the **Actions** tab means all of it worked.
 
