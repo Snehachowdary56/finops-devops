@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       localstack:
-        image: localstack/localstack:3.8
+        image: localstack/localstack:4.14
         ports: ["4566:4566"]
         env:
           SERVICES: s3,iam,sts,cloudwatch
