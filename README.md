@@ -42,7 +42,7 @@ flowchart LR
     tag[git tag v1.x.y] --> t[pytest] --> b[docker build] --> scan[Trivy scan<br/>fail on critical] --> smoke[run container<br/>/health smoke test] --> push[push to ghcr.io] --> rel[GitHub Release<br/>with change notes]
 ```
 
-`.github/workflows/release.yml` runs this whenever a version tag is pushed, so every release is tested, scanned, smoke-tested and published the same way.
+`.github/workflows/release.yml` runs this when a version tag is pushed or a release is started from the Actions tab with a version number, so every release is tested, scanned, smoke-tested and published the same way.
 
 ## What the service does (FinOps)
 
