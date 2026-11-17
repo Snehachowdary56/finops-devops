@@ -69,12 +69,12 @@ jobs:
       - name: Check Prometheus is scraping the app
         run: |
           for i in $(seq 1 30); do
-            v=$(curl -s 'http://localhost:9090/api/v1/query?query=up{job="finops"}' | python3 -c 'import sys,json; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else "")' || true)
+            v=$(curl -sG http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="finops"}' | python3 -c 'import sys,json; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else "")' || true)
             [ "$v" = "1" ] && echo "Prometheus target is up" && break
             sleep 3
           done
           [ "$v" = "1" ]
-          curl -s 'http://localhost:9090/api/v1/query?query=finops_month_forecast_usd' | python3 -m json.tool
+          curl -sG http://localhost:9090/api/v1/query --data-urlencode 'query=finops_month_forecast_usd' | python3 -m json.tool
       - name: Check Grafana loaded the dashboard
         run: |
           for i in $(seq 1 30); do curl -sf http://localhost:3000/api/health && break; sleep 3; done
