@@ -1,0 +1,59 @@
+name: Release
+# Tagging a version (git tag v1.0.0 && git push origin v1.0.0) runs this release pipeline:
+# test -> build the Docker image -> scan it -> publish it to GitHub Container Registry -> create a GitHub Release.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/snehachowdary56/finops-monitor
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Test before releasing
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          pytest -q
+      - name: Version
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build image
+        run: |
+          docker build -t "$IMAGE:${{ steps.v.outputs.version }}" -t "$IMAGE:latest" \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.version=${{ steps.v.outputs.version }} .
+      - name: Scan image for critical vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name smoke -p 8080:8080 "$IMAGE:${{ steps.v.outputs.version }}"
+          for i in $(seq 1 20); do curl -sf localhost:8080/health && break; sleep 1; done
+          curl -sf localhost:8080/api/summary | python3 -c "import sys,json; s=json.load(sys.stdin); print('forecast', s['forecast']['forecast'])"
+      - name: Publish to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:${{ steps.v.outputs.version }}"
+          docker push "$IMAGE:latest"
+      - name: Create GitHub Release with changes since the last tag
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          range=${prev:+$prev..}${GITHUB_REF_NAME}
+          { echo "Docker image: \`$IMAGE:${{ steps.v.outputs.version }}\`"; echo; echo "## Changes"; git log --format='- %s' $range; } > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "FinOps monitor $GITHUB_REF_NAME" --notes-file notes.md

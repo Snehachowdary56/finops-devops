@@ -8,6 +8,42 @@ It also exports a **Power BI** star schema for cost dashboards.
 > **Data note:** the cost data is **generated sample data** shaped like an AWS Cost and Usage Report.
 > No AWS account or real bill is used.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    dev([Developer]) -->|git push / tag| gha[GitHub Actions<br/>CI + release pipeline]
+    gha -->|tests, Terraform validate| gha
+    gha -->|build, scan, publish| ghcr[(GitHub Container<br/>Registry)]
+    gha -->|create| kind[Kubernetes cluster<br/>kind]
+    subgraph K8s[Kubernetes namespace finops]
+      cm[ConfigMap<br/>budget, date] --> pod1[finops-monitor pod]
+      cm --> pod2[finops-monitor pod]
+      svc[Service :30080] --> pod1 & pod2
+      sa[ServiceAccount + RBAC<br/>read own config only] -.-> pod1 & pod2
+    end
+    tf[Terraform] -->|apply| K8s
+    ans[Ansible] -->|render config, smoke test| svc
+    prom[Prometheus] -->|scrape /metrics| svc
+    graf[Grafana dashboard] --> prom
+    subgraph AWS[AWS via LocalStack]
+      s3[(S3 cost reports)]
+      iam[IAM read-only policy]
+      cw[CloudWatch budget alarm]
+    end
+    tf2[Terraform] --> AWS
+    cli[AWS CLI scripts<br/>Bash + PowerShell] --> s3 & cw
+```
+
+## Release process
+
+```mermaid
+flowchart LR
+    tag[git tag v1.x.y] --> t[pytest] --> b[docker build] --> scan[Trivy scan<br/>fail on critical] --> smoke[run container<br/>/health smoke test] --> push[push to ghcr.io] --> rel[GitHub Release<br/>with change notes]
+```
+
+`.github/workflows/release.yml` runs this whenever a version tag is pushed, so every release is tested, scanned, smoke-tested and published the same way.
+
 ## What the service does (FinOps)
 
 | Question | How |
@@ -35,6 +71,7 @@ Endpoints: `/health`, `/api/summary` (JSON), `/metrics` (Prometheus).
 | `ansible/site.yml` | Ansible | Renders per-environment Terraform settings (dev / test / prod), checks tools are installed, smoke-tests the live service |
 | `monitoring/` + `docker-compose.yml` | Prometheus, Grafana | Scrapes the metrics; Grafana dashboard with forecast, budget, untagged share, savings, cost by service and team |
 | `Jenkinsfile` | Jenkins | Pipeline: test → build image → cluster → configure → Terraform deploy → smoke test |
+| `.github/workflows/release.yml` | GitHub Actions, GHCR, Trivy | Release pipeline: on a version tag, test, build, scan, smoke-test and publish the image, then create a GitHub Release |
 | `.github/workflows/ci.yml` | GitHub Actions | Runs all of the above automatically on every push (see below) |
 | `app/report.py` | Power BI | Writes `fact_cost.csv` + `dim_service`, `dim_team`, `dim_date` and `rightsizing.csv` for a Power BI model |
 
