@@ -41,12 +41,9 @@ jobs:
             --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
             --label org.opencontainers.image.version=${{ steps.v.outputs.version }} .
       - name: Scan image for critical vulnerabilities (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$IMAGE:${{ steps.v.outputs.version }}"
       - name: Smoke-test the image
         run: |
           docker run -d --name smoke -p 8080:8080 "$IMAGE:${{ steps.v.outputs.version }}"
