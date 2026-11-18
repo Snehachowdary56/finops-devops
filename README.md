@@ -71,19 +71,22 @@ Endpoints: `/health`, `/api/summary` (JSON), `/metrics` (Prometheus).
 | `ansible/site.yml` | Ansible | Renders per-environment Terraform settings (dev / test / prod), checks tools are installed, smoke-tests the live service |
 | `monitoring/` + `docker-compose.yml` | Prometheus, Grafana | Scrapes the metrics; Grafana dashboard with forecast, budget, untagged share, savings, cost by service and team |
 | `Jenkinsfile` | Jenkins | Pipeline: test → build image → cluster → configure → Terraform deploy → smoke test |
+| `scripts/publish_costs_azure.sh` | Azure CLI, Azure Blob Storage | Uploads the Power BI files to a private Blob container; runs against **Azurite** (Microsoft's Azure Storage emulator) in CI, or real Azure with a connection string |
 | `.github/workflows/release.yml` | GitHub Actions, GHCR, Trivy | Release pipeline: on a version tag, test, build, scan, smoke-test and publish the image, then create a GitHub Release |
 | `.github/workflows/ci.yml` | GitHub Actions | Runs all of the above automatically on every push (see below) |
 | `app/report.py` | Power BI | Writes `fact_cost.csv` + `dim_service`, `dim_team`, `dim_date` and `rightsizing.csv` for a Power BI model |
 
 ## Proof it works: GitHub Actions
 
-Every push runs four jobs on GitHub's machines:
+Every push runs five jobs on GitHub's machines:
 
 1. **test**: 19 pytest tests, Ansible syntax check, Terraform validate (Kubernetes and AWS), ShellCheck, Docker build
 2. **deploy-kubernetes**: creates a real Kubernetes cluster (kind), loads the image, runs Ansible, deploys with Terraform, waits for the rollout, checks RBAC with `kubectl auth can-i` (allowed: read own config; denied: secrets, pods, deployments, other namespaces), then Ansible smoke-tests the live service
 3. **monitoring**: starts the app, Prometheus and Grafana, and checks Prometheus is scraping the app and Grafana loaded the dashboard
 
 4. **aws-localstack**: starts LocalStack, creates the S3 bucket, IAM policy/user and CloudWatch alarm with Terraform, checks them with the AWS CLI, runs `publish_costs.sh`, and waits until the CloudWatch alarm goes to **ALARM** (forecast $27,848 > budget $25,000)
+
+5. **azure-azurite**: starts Azurite (Microsoft's Azure Storage emulator) and uploads the Power BI files to Azure Blob Storage with the Azure CLI
 
 A green ✓ in the **Actions** tab means all of it worked.
 

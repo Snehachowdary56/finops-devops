@@ -155,3 +155,20 @@ jobs:
           [ "$state" = "ALARM" ]
           aws cloudwatch describe-alarms --alarm-names finops-forecast-over-budget --query 'MetricAlarms[0].[AlarmName,StateValue,StateReason]' --output text
           echo "CloudWatch alarm fired: forecast above budget"
+
+  azure-azurite:
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite
+        ports: ["10000:10000"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - name: Azure CLI version
+        run: az version --output table
+      - name: Publish cost reports to Azure Blob Storage (Azurite emulator)
+        run: ./scripts/publish_costs_azure.sh
