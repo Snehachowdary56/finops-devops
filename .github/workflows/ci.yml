@@ -172,3 +172,91 @@ jobs:
         run: az version --output table
       - name: Publish cost reports to Azure Blob Storage (Azurite emulator)
         run: ./scripts/publish_costs_azure.sh
+
+  # Self-service: every folder under services/ gets tested, built and checked automatically.
+  services-list:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.list.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: echo "services=$(ls -d services/*/ | xargs -n1 basename | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  services:
+    needs: [test, services-list]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.services-list.outputs.services) }}
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt pytest
+      - name: Tests
+        run: pytest -q
+      - name: Build the image and check its health endpoint
+        run: |
+          docker build -t ${{ matrix.service }}:ci .
+          docker run -d --name svc -p 18080:8080 ${{ matrix.service }}:ci
+          for i in $(seq 1 20); do curl -sf localhost:18080/health && break; sleep 1; done
+          curl -sf localhost:18080/health
+          curl -sf localhost:18080/metrics | grep -q http_requests_total
+      - name: Render the Kubernetes manifests (kustomize)
+        run: kubectl kustomize k8s
+
+  # GitOps: Argo CD deploys from this repository and repairs drift on its own.
+  gitops-argocd:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Kubernetes cluster (kind)
+        uses: helm/kind-action@v1
+        with: {cluster_name: gitops}
+      - name: Build images and load them into the cluster
+        run: |
+          docker build -t finops-monitor:local .
+          docker build -t sample-api:local services/sample-api
+          kind load docker-image finops-monitor:local sample-api:local --name gitops
+      - name: Install Argo CD
+        run: |
+          kubectl create namespace argocd
+          kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
+          kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s
+      - name: Point Argo CD at this repository (app of apps)
+        run: |
+          kubectl apply -f gitops/root-app.yaml
+      - name: Wait until every application is Synced and Healthy
+        run: |
+          for i in $(seq 1 72); do
+            kubectl -n argocd get applications -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers || true
+            ok=$(kubectl -n argocd get applications -o json | jq '[.items[] | select(.status.sync.status=="Synced" and .status.health.status=="Healthy")] | length')
+            [ "$ok" = "3" ] && echo "All 3 applications Synced and Healthy" && exit 0
+            sleep 5
+          done
+          kubectl -n argocd get applications -o yaml | tail -80
+          exit 1
+      - name: Check the deployed services
+        run: |
+          kubectl -n finops rollout status deployment/finops-monitor --timeout=120s
+          kubectl -n sample-api rollout status deployment/sample-api --timeout=120s
+          kubectl -n sample-api run probe --rm -i --restart=Never --image=curlimages/curl -- -sf http://sample-api/health
+      - name: Drift test - a manual change is reverted to what Git says (self-heal)
+        run: |
+          kubectl -n sample-api scale deployment/sample-api --replicas=0
+          for i in $(seq 1 36); do
+            r=$(kubectl -n sample-api get deployment sample-api -o jsonpath='{.spec.replicas}')
+            echo "replicas=$r"
+            [ "$r" = "2" ] && echo "Argo CD restored the deployment from Git" && exit 0
+            sleep 5
+          done
+          exit 1
+      - if: failure()
+        run: kubectl get pods -A

@@ -76,6 +76,36 @@ Endpoints: `/health`, `/api/summary` (JSON), `/metrics` (Prometheus).
 | `.github/workflows/ci.yml` | GitHub Actions | Runs all of the above automatically on every push (see below) |
 | `app/report.py` | Power BI | Writes `fact_cost.csv` + `dim_service`, `dim_team`, `dim_date` and `rightsizing.csv` for a Power BI model |
 
+## Platform: self-service template and GitOps
+
+**Self-service template.** One command creates a new service that already follows the platform's standards:
+
+```
+python -m platformkit.new_service orders-api --team data --gitops
+```
+
+It writes `services/orders-api/` with a `/health` and `/metrics` app, tests, a non-root Dockerfile with a health
+check, Kubernetes manifests (own namespace, a ServiceAccount with no extra permissions, probes, CPU and memory
+limits, read-only file system, kustomize labels for the owning team) and an onboarding README. Names are checked
+against Kubernetes naming rules, reserved names are refused, and existing services are never overwritten.
+`--gitops` also registers the service with Argo CD. CI picks up every folder under `services/` automatically:
+tests, image build, a container health check and a manifest render. `services/sample-api` was created this way.
+
+**GitOps with Argo CD.** `gitops/root-app.yaml` is an *app of apps*: Argo CD watches `gitops/apps/` and creates one
+Application per file (the FinOps monitor and `sample-api`). Sync is automated with **prune** (removed from Git =
+removed from the cluster) and **self-heal** (manual changes are reverted to what Git says). In CI, the
+`gitops-argocd` job installs Argo CD in a kind cluster, waits until all 3 applications are Synced and Healthy, calls
+the deployed service, then scales a deployment to 0 by hand and checks that Argo CD restores it from Git.
+
+```mermaid
+flowchart LR
+  dev[Developer] -->|python -m platformkit.new_service| svc[services/name/<br/>app, tests, Dockerfile, k8s]
+  svc -->|pull request| git[(Git: main)]
+  git --> ci[CI: tests, build, health check]
+  git -->|watched by| argo[Argo CD<br/>app of apps]
+  argo -->|sync, prune, self-heal| k8s[Kubernetes cluster]
+```
+
 ## Proof it works: GitHub Actions
 
 Every push runs five jobs on GitHub's machines:

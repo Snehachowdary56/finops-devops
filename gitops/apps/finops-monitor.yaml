@@ -1,0 +1,19 @@
+# Argo CD Application: keeps the cluster in sync with this folder in Git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: finops-monitor
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Snehachowdary56/finops-devops
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true      # resources deleted from Git are deleted from the cluster
+      selfHeal: true   # manual changes in the cluster are reverted to what Git says
+    syncOptions: [CreateNamespace=true]

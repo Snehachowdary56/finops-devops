@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${name}
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels: {app: ${name}}
+  template:
+    metadata:
+      labels: {app: ${name}}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "${port}"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: ${name}
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: ${name}
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: ${port}}]
+          env: [{name: PORT, value: "${port}"}]
+          resources:
+            requests: {cpu: 25m, memory: 48Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe: {httpGet: {path: /health, port: ${port}}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /health, port: ${port}}, periodSeconds: 10}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
